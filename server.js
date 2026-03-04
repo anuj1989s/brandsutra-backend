@@ -4,9 +4,22 @@
 //  Railway.app pe deploy hoga
 // ============================================================
 
-const express = require('express');
-const cors    = require('cors');
-const crypto  = require('crypto');
+const express  = require('express');
+const cors     = require('cors');
+const crypto   = require('crypto');
+const Razorpay = require('razorpay');
+
+// Razorpay instance
+const razorpay = new Razorpay({
+  key_id:     process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
+
+// Plan IDs from Razorpay Dashboard
+const RAZORPAY_PLANS = {
+  pro:    'plan_SNDjIwfxc1JJWW',
+  agency: 'plan_SNDlAsEe5YKyLo',
+};
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -275,16 +288,28 @@ Make it compelling, specific, and ready to use.`;
 //  SUBSCRIPTION / PAYMENT ROUTES
 // ============================================================
 
-// POST /api/payment/create-order (Razorpay integration)
-app.post('/api/payment/create-order', requireAuth, async (req, res) => {
+// POST /api/payment/create-subscription — Razorpay subscription banao
+app.post('/api/payment/create-subscription', requireAuth, async (req, res) => {
   const { plan } = req.body;
   if (!PLANS[plan]) return res.status(400).json({ error: 'Invalid plan' });
 
   // =======================================================
   // PRODUCTION MEIN RAZORPAY SE ORDER CREATE KARO:
-  // const Razorpay = require('razorpay');
-  // const razorpay = new Razorpay({ key_id: process.env.RAZORPAY_KEY, key_secret: process.env.RAZORPAY_SECRET });
-  // const order = await razorpay.orders.create({ amount: PLANS[plan].price * 100, currency: 'INR' });
+  const planId = RAZORPAY_PLANS[plan];
+  if (!planId) return res.status(400).json({ error: 'Invalid plan' });
+
+  try {
+    const subscription = await razorpay.subscriptions.create({
+      plan_id:         planId,
+      total_count:     12, // 12 months
+      quantity:        1,
+      customer_notify: 1,
+    });
+    return res.json({ subscriptionId: subscription.id, key: process.env.RAZORPAY_KEY_ID });
+  } catch (e) {
+    console.error('Razorpay error:', e);
+    return res.status(500).json({ error: 'Payment creation failed' });
+  }
   // res.json({ orderId: order.id, amount: order.amount, currency: 'INR', key: process.env.RAZORPAY_KEY });
   // =======================================================
 
@@ -298,9 +323,16 @@ app.post('/api/payment/create-order', requireAuth, async (req, res) => {
   });
 });
 
-// POST /api/payment/verify — Payment verify karke plan upgrade karo
+// POST /api/payment/verify — Razorpay signature verify karke plan upgrade karo
 app.post('/api/payment/verify', requireAuth, (req, res) => {
-  const { plan, paymentId } = req.body;
+  const { plan, paymentId, subscriptionId, signature } = req.body;
+
+  // Signature verify karo
+  const body       = paymentId + '|' + subscriptionId;
+  const expected   = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(body).digest('hex');
+  const isValid    = expected === signature;
+
+  if (!isValid) return res.status(400).json({ error: 'Invalid payment signature' });
   if (!PLANS[plan]) return res.status(400).json({ error: 'Invalid plan' });
 
   // Production mein Razorpay signature verify karo
